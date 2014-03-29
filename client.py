@@ -34,10 +34,6 @@ class FtpWorker(object):
         logging.info('get welcome msg succeeded, msg = %r' % msg)
         self.try_login('testuser', 'testpw')
 
-    def on_line(self, data):
-        logging.debug('on_line called, data = %r' % data)
-        self.stream.read_until('\n', self.on_line)
-
     def read_until_line(self, callback):
         def _callback(data):
             if not data:
